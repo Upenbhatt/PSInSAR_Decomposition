@@ -1,0 +1,109 @@
+"""
+PS-InSAR Ascending & Descending LOS Decomposition
+Author: <your name>
+Purpose: Convert LOS velocities → Vertical (Vu) and East-West (Ve)
+
+Input rasters must:
+• Be in same projection
+• Same resolution
+• Same extent
+• Units = mm/year
+"""
+
+import numpy as np
+import rasterio
+
+# ==========================================================
+# 1️⃣ INPUT FILE PATHS  (EDIT THESE)
+# ==========================================================
+# Convert csv file containing velocities into raster###
+asc_path  = r"Asc_LOS.tif"
+desc_path = r"Desc_LOS.tif"
+
+out_vertical = r"Vertical_Velocity.tif"
+out_east     = r"EastWest_Velocity.tif"
+
+# ==========================================================
+# 2️⃣ SENSOR GEOMETRY (YOUR VALUES)
+# ==========================================================
+# Ascending
+theta_asc_deg = 34        # incidence angle(derived from metadata)
+alpha_asc_deg = -123.8    # heading angle (derived from metadata)
+
+# Descending
+theta_desc_deg = 30       #(derived from metadata)
+alpha_desc_deg = -167.6   #(derived from metadata)
+
+# Convert degrees → radians
+theta_asc  = np.radians(theta_asc_deg)
+theta_desc = np.radians(theta_desc_deg)
+alpha_asc  = np.radians(alpha_asc_deg)
+alpha_desc = np.radians(alpha_desc_deg)
+
+# ==========================================================
+# 3️⃣ READ INPUT RASTERS
+# ==========================================================
+
+with rasterio.open(asc_path) as asc_src:
+    asc = asc_src.read(1).astype("float64")
+    meta = asc_src.meta.copy()
+
+with rasterio.open(desc_path) as desc_src:
+    desc = desc_src.read(1).astype("float64")
+
+# Replace NoData with NaN
+asc[asc == -9999] = np.nan
+desc[desc == -9999] = np.nan
+
+# ==========================================================
+# 4️⃣ BUILD DECOMPOSITION MATRIX
+# ==========================================================
+# LOS equation:
+# Vlos = -Ve*sin(theta)*sin(alpha) + Vu*cos(theta)
+
+A = np.array([
+    [-np.sin(theta_asc)*np.sin(alpha_asc),  np.cos(theta_asc)],
+    [-np.sin(theta_desc)*np.sin(alpha_desc), np.cos(theta_desc)]
+])
+
+A_inv = np.linalg.inv(A)
+
+print("Decomposition matrix inverse:")
+print(A_inv)
+
+# ==========================================================
+# 5️⃣ SOLVE FOR EACH PIXEL
+# ==========================================================
+
+rows, cols = asc.shape
+Ve = np.full((rows, cols), np.nan)
+Vu = np.full((rows, cols), np.nan)
+
+for i in range(rows):
+    for j in range(cols):
+        if np.isnan(asc[i,j]) or np.isnan(desc[i,j]):
+            continue
+        
+        L = np.array([asc[i,j], desc[i,j]])
+        solution = A_inv @ L
+        
+        Ve[i,j] = solution[0]   # East-West velocity
+        Vu[i,j] = solution[1]   # Vertical velocity
+
+print("Decomposition finished.")
+
+# ==========================================================
+# 6️⃣ SAVE OUTPUT RASTERS
+# ==========================================================
+
+meta.update(dtype=rasterio.float32, nodata=np.nan)
+
+with rasterio.open(out_vertical, "w", **meta) as dst:
+    dst.write(Vu.astype("float32"), 1)
+
+with rasterio.open(out_east, "w", **meta) as dst:
+    dst.write(Ve.astype("float32"), 1)
+
+print("Outputs saved:")
+print("Vertical  →", out_vertical)
+print("East-West →", out_east)
